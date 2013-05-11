@@ -35,14 +35,15 @@ func TestConnectionAllocations(t *testing.T) {
 		}
 		c.rw.Flush()
 	})
-	checkMallocs(t, "readStatus", 1000, func(t *testing.T) {
-		if v, err := c.readStatus(); err != nil {
+	by := []byte("123")
+	checkMallocs(t, "readStatusBytes", 1000, func(t *testing.T) {
+		if v, err := c.readStatusBytes(); err != nil {
 			t.Fatal(err)
-		} else if v != "123" {
-			t.Fatal("readStatus returned wrong value")
+		} else if !bytes.Equal(v, by) {
+			t.Fatal("readStatusBytes returned wrong value")
 		}
 	})
-	by := []byte{1, 2}
+	by = []byte{1, 2}
 	checkMallocs(t, "writeBulkBytes", 1000, func(t *testing.T) {
 		if err := c.writeBulkBytes(by); err != nil {
 			t.Fatal(err)

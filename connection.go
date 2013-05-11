@@ -3,8 +3,10 @@ package redis
 import (
 	"bufio"
 	"errors"
+	"fmt"
 	"io"
 	"net"
+	"strings"
 	"time"
 )
 
@@ -16,10 +18,17 @@ var (
 	ErrInvalidArgumentType = errors.New("redis: invalid argument type")
 )
 
-type ErrReply string
+type ErrReply struct {
+	tag, msg string
+}
+
+func parseErrReply(s string) ErrReply {
+	p := strings.SplitN(s, " ", 1)
+	return ErrReply{p[0], p[1]}
+}
 
 func (e ErrReply) Error() string {
-	return "redis: error response from server: " + string(e)
+	return fmt.Sprintf("redis: server %s: %s", e.tag, e.msg)
 }
 
 const (
@@ -137,7 +146,7 @@ func (rc *redisConnection) readError(readMarker bool) error {
 	if isPrefix {
 		return ErrInvalidValue
 	}
-	return ErrReply(string(line))
+	return parseErrReply(string(line))
 }
 
 func (rc *redisConnection) readInteger() (int64, error) {
@@ -218,7 +227,7 @@ func (rc *redisConnection) readStatusBytes() ([]byte, error) {
 	case statusReplyMarker:
 		return line, nil
 	case errorReplyMarker:
-		return nil, ErrReply(string(line))
+		return nil, parseErrReply(string(line))
 	case bulkReplyMarker:
 		if len(line) == 2 && line[0] == '-' && line[1] == '1' {
 			return nil, nil
@@ -226,16 +235,6 @@ func (rc *redisConnection) readStatusBytes() ([]byte, error) {
 	}
 	return nil, ErrInvalidReplyMarker
 }
-
-func (rc *redisConnection) readStatus() (string, error) {
-	st, err := rc.readStatusBytes()
-	if err != nil || st == nil {
-		return "", err
-	}
-	return string(st), err
-}
-
-//
 
 func (rc *redisConnection) sendCommand(cmd string, args ...interface{}) error {
 	if err := rc.writeArgumentCount(1 + len(args)); err != nil {
@@ -267,36 +266,40 @@ func (rc *redisConnection) sendCommand(cmd string, args ...interface{}) error {
 	return nil
 }
 
-func (rc *redisConnection) readReply() (interface{}, error) {
-	mb, err := rc.rw.Peek(1)
-	if err != nil {
-		return nil, err
-	}
-	switch mb[0] {
-	case multiBulkReplyMarker:
-		n, _, err := rc.readI64()
-		if err != nil {
-			return nil, err
-		}
-		if n < 0 {
-			return nil, nil
-		}
-		res := make([]interface{}, n)
-		for i := int64(0); i < n; i++ {
-			res[i], err = rc.readReply()
-			if err != nil {
-				return nil, err
-			}
-		}
-		return res, err
-	case errorReplyMarker:
-		return nil, rc.readError(true)
-	case statusReplyMarker:
-		return rc.readStatus()
-	case bulkReplyMarker:
-		return rc.readBulkBytes()
-	case integerReplyMarker:
-		return rc.readInteger()
-	}
-	return nil, ErrInvalidReplyMarker
-}
+// func (rc *redisConnection) readReply() (interface{}, error) {
+// 	mb, err := rc.rw.Peek(1)
+// 	if err != nil {
+// 		return nil, err
+// 	}
+// 	switch mb[0] {
+// 	case multiBulkReplyMarker:
+// 		n, _, err := rc.readI64()
+// 		if err != nil {
+// 			return nil, err
+// 		}
+// 		if n < 0 {
+// 			return nil, nil
+// 		}
+// 		res := make([]interface{}, n)
+// 		for i := int64(0); i < n; i++ {
+// 			res[i], err = rc.readReply()
+// 			if err != nil {
+// 				return nil, err
+// 			}
+// 		}
+// 		return res, err
+// 	case errorReplyMarker:
+// 		return nil, rc.readError(true)
+// 	case statusReplyMarker:
+// 		b, err := rc.readStatusBytes()
+// 		if err != nil {
+// 			return nil, err
+// 		}
+// 		return string(b), nil
+// 	case bulkReplyMarker:
+// 		return rc.readBulkBytes()
+// 	case integerReplyMarker:
+// 		return rc.readInteger()
+// 	}
+// 	return nil, ErrInvalidReplyMarker
+// }

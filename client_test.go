@@ -11,15 +11,23 @@ func checkMallocs(t *testing.T, key string, count int, fn func(t *testing.T)) {
 	memstats := new(runtime.MemStats)
 	runtime.ReadMemStats(memstats)
 	mallocs := 0 - memstats.Mallocs
-
 	for i := 0; i < count; i++ {
 		fn(t)
 	}
-
 	runtime.ReadMemStats(memstats)
 	mallocs += memstats.Mallocs
 	t.Logf("mallocs per %s: %d\n", key, mallocs/uint64(count))
 
+}
+
+func checkMallocs2(t *testing.T, key string, count int, fn func(t *testing.T, count int)) {
+	memstats := new(runtime.MemStats)
+	runtime.ReadMemStats(memstats)
+	mallocs := 0 - memstats.Mallocs
+	fn(t, count)
+	runtime.ReadMemStats(memstats)
+	mallocs += memstats.Mallocs
+	t.Logf("mallocs per %s: %d\n", key, mallocs/uint64(count))
 }
 
 func TestCommands(t *testing.T) {
