@@ -105,15 +105,7 @@ func (rc *redisConnection) readI64() (int64, byte, error) {
 	if err != nil {
 		return -1, marker, err
 	} else if marker == errorReplyMarker {
-		line, isPrefix, err := rc.rw.ReadLine()
-		if err != nil {
-			return -1, marker, err
-		}
-		// Errors should never be larger than the buffer
-		if isPrefix {
-			return -1, marker, ErrInvalidValue
-		}
-		return -1, marker, ErrReply(string(line))
+		return -1, marker, rc.readError(false)
 	}
 	line, isPrefix, err := rc.rw.ReadLine()
 	if err != nil {
@@ -125,6 +117,27 @@ func (rc *redisConnection) readI64() (int64, byte, error) {
 	}
 	n, err := btoi64(line)
 	return n, marker, err
+}
+
+func (rc *redisConnection) readError(readMarker bool) error {
+	if readMarker {
+		marker, err := rc.rw.ReadByte()
+		if err != nil {
+			return err
+		}
+		if marker != errorReplyMarker {
+			return ErrInvalidReplyMarker
+		}
+	}
+	line, isPrefix, err := rc.rw.ReadLine()
+	if err != nil {
+		return err
+	}
+	// Errors should never be larger than the buffer
+	if isPrefix {
+		return ErrInvalidValue
+	}
+	return ErrReply(string(line))
 }
 
 func (rc *redisConnection) readInteger() (int64, error) {
@@ -186,30 +199,40 @@ func (rc *redisConnection) readBulkBytes() ([]byte, error) {
 	return b[:n], nil
 }
 
-func (rc *redisConnection) readStatus() (string, error) {
+// Response []byte only valid until next read. Copy if you
+// need to retain it.
+func (rc *redisConnection) readStatusBytes() ([]byte, error) {
 	m, err := rc.rw.ReadByte()
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	line, isPrefix, err := rc.rw.ReadLine()
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	// Status/error should never be larger than the buffer
 	if isPrefix {
-		return "", ErrInvalidValue
+		return nil, ErrInvalidValue
 	}
 	switch m {
 	case statusReplyMarker:
-		return string(line), nil
+		return line, nil
 	case errorReplyMarker:
-		return "", ErrReply(string(line))
+		return nil, ErrReply(string(line))
 	case bulkReplyMarker:
 		if len(line) == 2 && line[0] == '-' && line[1] == '1' {
-			return "", nil
+			return nil, nil
 		}
 	}
-	return "", ErrInvalidReplyMarker
+	return nil, ErrInvalidReplyMarker
+}
+
+func (rc *redisConnection) readStatus() (string, error) {
+	st, err := rc.readStatusBytes()
+	if err != nil || st == nil {
+		return "", err
+	}
+	return string(st), err
 }
 
 //
@@ -228,6 +251,8 @@ func (rc *redisConnection) sendCommand(cmd string, args ...interface{}) error {
 			err = rc.writeBulkBytes(itob64(int64(v), rc.buf))
 		case int64:
 			err = rc.writeBulkBytes(itob64(v, rc.buf))
+		case time.Duration:
+			err = rc.writeBulkBytes(itob64(int64(v), rc.buf))
 		case []byte:
 			err = rc.writeBulkBytes(v)
 		case string:
@@ -240,4 +265,38 @@ func (rc *redisConnection) sendCommand(cmd string, args ...interface{}) error {
 		}
 	}
 	return nil
+}
+
+func (rc *redisConnection) readReply() (interface{}, error) {
+	mb, err := rc.rw.Peek(1)
+	if err != nil {
+		return nil, err
+	}
+	switch mb[0] {
+	case multiBulkReplyMarker:
+		n, _, err := rc.readI64()
+		if err != nil {
+			return nil, err
+		}
+		if n < 0 {
+			return nil, nil
+		}
+		res := make([]interface{}, n)
+		for i := int64(0); i < n; i++ {
+			res[i], err = rc.readReply()
+			if err != nil {
+				return nil, err
+			}
+		}
+		return res, err
+	case errorReplyMarker:
+		return nil, rc.readError(true)
+	case statusReplyMarker:
+		return rc.readStatus()
+	case bulkReplyMarker:
+		return rc.readBulkBytes()
+	case integerReplyMarker:
+		return rc.readInteger()
+	}
+	return nil, ErrInvalidReplyMarker
 }

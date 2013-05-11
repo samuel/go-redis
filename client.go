@@ -2,6 +2,7 @@ package redis
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
 	"net"
@@ -19,6 +20,11 @@ const (
 
 var (
 	ErrInvalidStatus = errors.New("redis: invalid status response")
+)
+
+var (
+	okStatus   = []byte("OK")
+	pongStatus = []byte("PONG")
 )
 
 type Client struct {
@@ -67,21 +73,59 @@ func (cli *Client) Incr(key string) (int64, error) {
 	return cli.integerRequest("INCR", key)
 }
 
+func (cli *Client) MGet(key ...string) ([][]byte, error) {
+	var out [][]byte
+	err := cli.withConnection(func(c *redisConnection) error {
+		if err := c.writeArgumentCount(1 + len(key)); err != nil {
+			return err
+		}
+		if err := c.writeBulkString("MGET"); err != nil {
+			return err
+		}
+		for _, k := range key {
+			if err := c.writeBulkString(k); err != nil {
+				return err
+			}
+		}
+
+		err := c.flush()
+		if err == nil {
+			n, m, e := c.readI64()
+			if e != nil {
+				err = e
+			} else if m != multiBulkReplyMarker {
+				err = ErrInvalidReplyMarker
+			} else {
+				out = make([][]byte, n)
+				for i := int64(0); i < n; i++ {
+					out[i], err = c.readBulkBytes()
+					if err != nil {
+						break
+					}
+				}
+			}
+		}
+		return err
+	})
+	return out, err
+}
+
 func (cli *Client) Ping() error {
 	status, err := cli.statusRequest("PING")
-	if err == nil && status != "PONG" {
+	if err == nil && !bytes.Equal(status, pongStatus) {
 		err = ErrInvalidStatus
 	}
 	return err
 }
 
-func (cli *Client) Quit() (string, error) {
-	return cli.statusRequest("QUIT")
+func (cli *Client) Quit() error {
+	_, err := cli.statusRequest("QUIT")
+	return err
 }
 
 func (cli *Client) Select(index int) error {
 	status, err := cli.statusRequest("SELECT", index)
-	if err == nil && status != "OK" {
+	if err == nil && !bytes.Equal(status, okStatus) {
 		err = ErrInvalidStatus
 	}
 	return err
@@ -118,22 +162,22 @@ func (cli *Client) set(key string, value []byte, expireTime time.Duration, nx, x
 		args = append(args, "XX")
 	}
 	status, err := cli.statusRequest("SET", args...)
-	if err != nil && (status != "" || status != "OK") {
+	if err == nil && status != nil && !bytes.Equal(status, okStatus) {
 		err = ErrInvalidStatus
 	}
-	return status != "", err
+	return status != nil, err
 }
 
 //
 
-func (cli *Client) statusRequest(cmd string, args ...interface{}) (status string, err error) {
+func (cli *Client) statusRequest(cmd string, args ...interface{}) (status []byte, err error) {
 	err = cli.withConnection(func(c *redisConnection) error {
-		err = c.sendCommand(cmd, args...)
+		err := c.sendCommand(cmd, args...)
 		if err == nil {
 			err = c.flush()
 		}
 		if err == nil {
-			status, err = c.readStatus()
+			status, err = c.readStatusBytes()
 		}
 		return err
 	})
@@ -142,7 +186,7 @@ func (cli *Client) statusRequest(cmd string, args ...interface{}) (status string
 
 func (cli *Client) integerRequest(cmd string, args ...interface{}) (i int64, err error) {
 	err = cli.withConnection(func(c *redisConnection) error {
-		err = c.sendCommand(cmd, args...)
+		err := c.sendCommand(cmd, args...)
 		if err == nil {
 			err = c.flush()
 		}
@@ -156,7 +200,7 @@ func (cli *Client) integerRequest(cmd string, args ...interface{}) (i int64, err
 
 func (cli *Client) bulkRequest(cmd string, args ...interface{}) (b []byte, err error) {
 	err = cli.withConnection(func(c *redisConnection) error {
-		err = c.sendCommand(cmd, args...)
+		err := c.sendCommand(cmd, args...)
 		if err == nil {
 			err = c.flush()
 		}
@@ -183,8 +227,6 @@ func (cli *Client) withConnection(fn func(c *redisConnection) error) error {
 	cli.pushConnection(c)
 	return err
 }
-
-//
 
 func (cli *Client) pushConnection(rc *redisConnection) {
 	cli.idleConnLock.Lock()

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"runtime"
 	"testing"
+	"time"
 )
 
 func checkMallocs(t *testing.T, key string, count int, fn func(t *testing.T)) {
@@ -32,9 +33,11 @@ func TestCommands(t *testing.T) {
 		t.Fatalf("Select failed with %+v", err)
 	}
 
+	const count = 100
+
 	by := []byte{1, 2}
 
-	checkMallocs(t, "PING", 100, func(t *testing.T) {
+	checkMallocs(t, "PING", count, func(t *testing.T) {
 		if err := c.Ping(); err != nil {
 			t.Fatalf("PING failed with %+v", err)
 		}
@@ -42,17 +45,17 @@ func TestCommands(t *testing.T) {
 	if err := c.Set("test", []byte("0"), 0); err != nil {
 		t.Fatalf("SET failed with %+v", err)
 	}
-	checkMallocs(t, "INCR", 100, func(t *testing.T) {
+	checkMallocs(t, "INCR", count, func(t *testing.T) {
 		if _, err := c.Incr("test"); err != nil {
 			t.Fatalf("INCR failed with %+v", err)
 		}
 	})
-	checkMallocs(t, "SET", 100, func(t *testing.T) {
+	checkMallocs(t, "SET", count, func(t *testing.T) {
 		if err := c.Set("test", by, 0); err != nil {
 			t.Fatalf("Set failed with %+v", err)
 		}
 	})
-	checkMallocs(t, "GET", 100, func(t *testing.T) {
+	checkMallocs(t, "GET", count, func(t *testing.T) {
 		if v, err := c.Get("test"); err != nil {
 			t.Fatalf("Get failed with %+v", err)
 		} else if !bytes.Equal(v, by) {
@@ -65,4 +68,16 @@ func TestCommands(t *testing.T) {
 	} else if ok {
 		t.Fatal("SetNX should have returned !ok")
 	}
+
+	by2 := []byte{3, 4}
+	if err := c.Set("test2", by2, time.Second*60); err != nil {
+		t.Fatalf("Set failed with %+v", err)
+	}
+	checkMallocs(t, "MGET", count, func(t *testing.T) {
+		if v, err := c.MGet("test", "test2"); err != nil {
+			t.Fatalf("MGET failed with %+v", err)
+		} else if len(v) != 2 || !bytes.Equal(v[0], by) || !bytes.Equal(v[1], by2) {
+			t.Fatalf("MGET returned unequal response: %+v", v)
+		}
+	})
 }
